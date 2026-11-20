@@ -113,6 +113,33 @@ Comma separated list of detector types to exclude. Protobuf name or IDs may be u
 \fB--no-verification-cache\fR
 Disable verification caching
 .TP
+\fB--verification-cache-ttl=12h\fR
+How long verification results remain valid before re-verification.
+.TP
+\fB--verification-invalid-cooldown=12h\fR
+How long a definitively invalid credential is reused from cache before re-checking.
+.TP
+\fB--verification-rate-limit=0s\fR
+Minimum interval between verification requests to the same service. 0 disables rate limiting.
+.TP
+\fB--verification-rate-burst=1\fR
+Maximum immediate verification requests allowed per service before rate limiting.
+.TP
+\fB--verification-max-retries=0\fR
+Retries after a 429 response before marking the result pending manual confirmation. 0 disables retries.
+.TP
+\fB--verification-backoff-initial=1s\fR
+Initial backoff after a rate-limited verification request.
+.TP
+\fB--verification-backoff-max=30s\fR
+Maximum backoff after a rate-limited verification request.
+.TP
+\fB--allow-side-effect-verification\fR
+Allow verification endpoints that mutate provider state (for example refresh-token rotation).
+.TP
+\fB--verification-audit-log=VERIFICATION-AUDIT-LOG\fR
+Write one JSON audit record per verification action to this file.
+.TP
 \fB--force-skip-binaries\fR
 Force skipping binaries.
 .TP

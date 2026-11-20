@@ -176,6 +176,7 @@ type Config struct {
 
 	VerificationResultCache  verificationcache.ResultCache
 	VerificationCacheMetrics verificationcache.MetricsReporter
+	VerificationCacheConfig  verificationcache.Config
 
 	// MaxDecodeDepth is the maximum number of iterative decoding passes per chunk.
 	// When a decoder transforms data, all decoders are re-run on the output up to this limit.
@@ -267,7 +268,11 @@ type Engine struct {
 
 // NewEngine creates a new Engine instance with the provided configuration.
 func NewEngine(ctx context.Context, cfg *Config) (*Engine, error) {
-	verificationCache := verificationcache.New(cfg.VerificationResultCache, cfg.VerificationCacheMetrics)
+	verificationCache := verificationcache.NewWithConfig(
+		cfg.VerificationResultCache,
+		cfg.VerificationCacheMetrics,
+		cfg.VerificationCacheConfig,
+	)
 
 	engine := &Engine{
 		concurrency:                         cfg.Concurrency,
@@ -1475,6 +1480,11 @@ func (e *Engine) notifierWorker(ctx context.Context) {
 				// Skip false positives
 				resultsDropped.WithLabelValues("notifier", "wordlist_false_positive", detectorNameStr).Inc()
 				continue
+			} else if result.VerificationStatus == detectors.VerificationStatusInvalid {
+				if !e.notifyUnverifiedResults {
+					resultsDropped.WithLabelValues("notifier", "unverified_result_filtered", detectorNameStr).Inc()
+					continue
+				}
 			} else if result.VerificationError() != nil {
 				if !e.notifyUnknownResults {
 					// Skip results with verification errors.

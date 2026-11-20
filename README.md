@@ -421,11 +421,17 @@ TruffleHog v3 is a complete rewrite in Go with many new powerful features.
 
 ## What is credential verification?
 
-For every potential credential that is detected, we've painstakingly implemented programmatic verification against the API that we think it belongs to. Verification eliminates false positives and provides three result statuses:
+For every potential credential that is detected, we've painstakingly implemented programmatic verification against the API that we think it belongs to. Verification eliminates false positives and classifies results as:
 
-- **verified**: Credential confirmed as valid and active by API testing
-- **unverified**: Credential detected but not confirmed valid (may be invalid, expired, or verification disabled)  
-- **unknown**: Verification attempted but failed due to errors, such as a network or API failure
+- **valid** (`verified: true`): Credential confirmed as valid and active by API testing
+- **invalid**: The provider definitively rejected the credential, or a local format check rejected it before any request
+- **unverified**: The verifier was disabled, unreachable, or returned a transient failure; this is retryable and must not be treated as definitively invalid
+- **pending_manual_confirmation**: Rate-limit retries were exhausted, or verification was withheld because the endpoint has provider side effects
+
+Verification cache entries contain a credential fingerprint and detector/service type. Valid and invalid outcomes have a
+configurable TTL/cooldown, while transient `unverified` entries are kept for visibility but are never reused as a verdict.
+Per-service rate limiting and retry-on-429 backoff are opt-in; everything is off by default except the existing cache.
+Set `--verification-audit-log` to write a JSONL record for every request, retry, cache hit, and skipped attempt.
 
 For example, the [AWS credential detector](pkg/detectors/aws/access_keys/accesskey.go) performs a `GetCallerIdentity` API call against the AWS API to verify if an AWS credential is active.
 
@@ -510,6 +516,29 @@ Flags:
                                  precedence over the include list.
       --[no-]no-verification-cache
                                  Disable verification caching
+      --verification-cache-ttl=12h
+                                 How long verification results remain valid before re-verification.
+      --verification-invalid-cooldown=12h
+                                 How long a definitively invalid credential is reused from cache before
+                                 re-checking.
+      --verification-rate-limit=0s
+                                 Minimum interval between verification requests to the same service. 0
+                                 disables rate limiting.
+      --verification-rate-burst=1
+                                 Maximum immediate verification requests allowed per service before rate
+                                 limiting.
+      --verification-max-retries=0
+                                 Retries after a 429 response before marking the result pending manual
+                                 confirmation. 0 disables retries.
+      --verification-backoff-initial=1s
+                                 Initial backoff after a rate-limited verification request.
+      --verification-backoff-max=30s
+                                 Maximum backoff after a rate-limited verification request.
+      --[no-]allow-side-effect-verification
+                                 Allow verification endpoints that mutate provider state (for example
+                                 refresh-token rotation).
+      --verification-audit-log=VERIFICATION-AUDIT-LOG
+                                 Write one JSON audit record per verification action to this file.
       --[no-]force-skip-binaries
                                  Force skipping binaries.
       --[no-]force-skip-archives

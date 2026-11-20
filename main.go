@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/alecthomas/kingpin/v2"
 	"github.com/fatih/color"
@@ -91,7 +92,16 @@ var (
 	excludeDetectors     = cli.Flag("exclude-detectors", "Comma separated list of detector types to exclude. Protobuf name or IDs may be used, as well as ranges. IDs defined here take precedence over the include list.").String()
 	jobReportFile        = cli.Flag("output-report", "Write a scan report to the provided path.").Hidden().OpenFile(os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
 
-	noVerificationCache = cli.Flag("no-verification-cache", "Disable verification caching").Bool()
+	noVerificationCache          = cli.Flag("no-verification-cache", "Disable verification caching").Bool()
+	verificationCacheTTL         = cli.Flag("verification-cache-ttl", "How long verification results remain valid before re-verification.").Default("12h").Duration()
+	verificationInvalidCooldown  = cli.Flag("verification-invalid-cooldown", "How long a definitively invalid credential is reused from cache before re-checking.").Default("12h").Duration()
+	verificationRateLimit        = cli.Flag("verification-rate-limit", "Minimum interval between verification requests to the same service. 0 disables rate limiting.").Default("0s").Duration()
+	verificationRateBurst        = cli.Flag("verification-rate-burst", "Maximum immediate verification requests allowed per service before rate limiting.").Default("1").Int()
+	verificationMaxRetries       = cli.Flag("verification-max-retries", "Retries after a 429 response before marking the result pending manual confirmation. 0 disables retries.").Default("0").Int()
+	verificationBackoffInitial   = cli.Flag("verification-backoff-initial", "Initial backoff after a rate-limited verification request.").Default("1s").Duration()
+	verificationBackoffMax       = cli.Flag("verification-backoff-max", "Maximum backoff after a rate-limited verification request.").Default("30s").Duration()
+	verificationAllowSideEffects = cli.Flag("allow-side-effect-verification", "Allow verification endpoints that mutate provider state (for example refresh-token rotation).").Bool()
+	verificationAuditLog         = cli.Flag("verification-audit-log", "Write one JSON audit record per verification action to this file.").String()
 
 	// Add feature flags
 	forceSkipBinaries        = cli.Flag("force-skip-binaries", "Force skipping binaries.").Bool()
@@ -665,6 +675,29 @@ func run(state overseer.State, logSync func() error) {
 	}
 
 	verificationCacheMetrics := verificationcache.InMemoryMetrics{}
+	verificationAudit := verificationcache.NewMemoryAuditLog()
+	auditSinks := verificationcache.MultiAuditSink{verificationAudit}
+	if *verificationAuditLog != "" {
+		auditFile, err := os.Create(*verificationAuditLog)
+		if err != nil {
+			logFatal(err, "failed to create verification audit log")
+		}
+		defer func() { _ = auditFile.Close() }()
+		auditSinks = append(auditSinks, verificationcache.NewJSONLAuditLog(auditFile))
+	}
+
+	verificationCacheConfig := verificationcache.Config{
+		CacheTTL:                    *verificationCacheTTL,
+		InvalidCooldown:             *verificationInvalidCooldown,
+		RateLimitInterval:           *verificationRateLimit,
+		RateLimitBurst:              *verificationRateBurst,
+		MaxRetries:                  *verificationMaxRetries,
+		BackoffInitial:              *verificationBackoffInitial,
+		BackoffMaximum:              *verificationBackoffMax,
+		AllowSideEffectVerification: *verificationAllowSideEffects,
+		TrackOutcomes:               true,
+		AuditSink:                   auditSinks,
+	}
 
 	engConf := engine.Config{
 		Concurrency:       *concurrency,
@@ -689,11 +722,25 @@ func run(state overseer.State, logSync func() error) {
 		ShouldScanEntireChunk:    *scanEntireChunk,
 		MaxDecodeDepth:           *maxDecodeDepth,
 		VerificationCacheMetrics: &verificationCacheMetrics,
+		VerificationCacheConfig:  verificationCacheConfig,
 		DedupeCacheSize:          *dedupeCacheSize,
 	}
 
 	if !*noVerificationCache {
-		engConf.VerificationResultCache = simple.NewCache[detectors.Result]()
+		retention := *verificationCacheTTL
+		if *verificationInvalidCooldown > retention {
+			retention = *verificationInvalidCooldown
+		}
+		engConf.VerificationResultCache = simple.NewCache[detectors.Result](
+			simple.WithExpirationInterval[detectors.Result](retention),
+			simple.WithPurgeInterval[detectors.Result](retention+time.Minute),
+		)
+	} else if !*noVerification {
+		logger.Info(
+			"verification cache disabled; every candidate will be verified remotely",
+			"cost_warning", true,
+			"verification_rate_limit", verificationRateLimit.String(),
+		)
 	}
 
 	// Check that there are no sources defined for non-scan subcommands. If
@@ -740,6 +787,38 @@ func run(state overseer.State, logSync func() error) {
 		AttemptsSaved:           verificationCacheMetrics.CredentialVerificationsSaved.Load(),
 		VerificationTimeSpentMS: verificationCacheMetrics.FromDataVerifyTimeSpentMS.Load(),
 	}
+	verificationOutcomes := struct {
+		Valid                    int64
+		Invalid                  int64
+		Unverified               int64
+		PendingManual            int64
+		RateLimitedUnverified    int64
+		RateLimitedPendingManual int64
+	}{
+		Valid:                    verificationCacheMetrics.VerifiedOutcomes.Load(),
+		Invalid:                  verificationCacheMetrics.InvalidOutcomes.Load(),
+		Unverified:               verificationCacheMetrics.UnverifiedOutcomes.Load(),
+		PendingManual:            verificationCacheMetrics.PendingManualOutcomes.Load(),
+		RateLimitedUnverified:    verificationCacheMetrics.RateLimitedUnverified.Load(),
+		RateLimitedPendingManual: verificationCacheMetrics.RateLimitedPendingManual.Load(),
+	}
+	verificationScheduling := struct {
+		Candidates                int64
+		RequestsWithCache         int64
+		CandidatesWouldBeRequests int64
+		Retries                   int64
+		RateLimitedAttempts       int64
+		CacheUnavailable          int64
+		AuditRecords              int
+	}{
+		Candidates:                verificationCacheMetrics.VerificationCandidates.Load(),
+		RequestsWithCache:         verificationCacheMetrics.VerificationRequests.Load(),
+		CandidatesWouldBeRequests: verificationCacheMetrics.VerificationCandidates.Load(),
+		Retries:                   verificationCacheMetrics.VerificationRetries.Load(),
+		RateLimitedAttempts:       verificationCacheMetrics.VerificationRateLimited.Load(),
+		CacheUnavailable:          verificationCacheMetrics.VerificationCacheUnavailable.Load(),
+		AuditRecords:              len(verificationAudit.Records()),
+	}
 
 	// Print results.
 	logger.Info("finished scanning",
@@ -750,6 +829,8 @@ func run(state overseer.State, logSync func() error) {
 		"scan_duration", metrics.ScanDuration.String(),
 		"trufflehog_version", version.BuildVersion,
 		"verification_caching", verificationCacheMetricsSnapshot,
+		"verification_outcomes", verificationOutcomes,
+		"verification_scheduling", verificationScheduling,
 	)
 
 	if metrics.hasFoundResults && *fail {

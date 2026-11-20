@@ -20,7 +20,10 @@ type Scanner struct {
 }
 
 // Ensure the Scanner satisfies the interface at compile time.
-var _ detectors.Detector = (*Scanner)(nil)
+var _ interface {
+	detectors.Detector
+	detectors.ResultSideEffectVerifier
+} = (*Scanner)(nil)
 
 var (
 	defaultClient = common.SaneHttpClient()
@@ -33,6 +36,12 @@ var (
 // Use identifiers in the secret preferably, or the provider name.
 func (s Scanner) Keywords() []string {
 	return []string{"dop_v1_", "doo_v1_", "dor_v1_"}
+}
+
+// VerificationHasSideEffectsForResult reports that exchanging a dor_ refresh token can rotate it. Access tokens
+// (dop_/doo_) do not mutate provider state.
+func (Scanner) VerificationHasSideEffectsForResult(result detectors.Result) bool {
+	return strings.HasPrefix(string(result.Raw), "dor_v1_")
 }
 
 // FromData will find and optionally verify DigitalOceanV2 secrets in a given set of bytes.
@@ -51,6 +60,7 @@ func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (result
 			Raw:          []byte(token),
 			SecretParts:  map[string]string{"key": token},
 		}
+		s1.VerificationSideEffects = s.VerificationHasSideEffectsForResult(s1)
 
 		if verify {
 			client := s.client

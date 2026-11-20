@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"io"
@@ -112,6 +113,16 @@ type InstrumentedTransport struct {
 	T http.RoundTripper
 }
 
+// HTTPStatusObserver receives the status code of each HTTP response made during a verification attempt.
+type HTTPStatusObserver interface {
+	ObserveHTTPStatus(statusCode int)
+}
+
+type httpStatusObserverContextKey struct{}
+
+// HTTPStatusObserverContextKey is the context key used with HTTPStatusObserver.
+var HTTPStatusObserverContextKey = httpStatusObserverContextKey{}
+
 func (t *InstrumentedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// increment counter for the request
 	recordHTTPRequest()
@@ -132,9 +143,20 @@ func (t *InstrumentedTransport) RoundTrip(req *http.Request) (*http.Response, er
 	if resp != nil {
 		// record latency, response size and increment counter for non-200 status code
 		recordHTTPResponse(resp.StatusCode, duration.Seconds(), resp.ContentLength)
+		if observer, ok := req.Context().Value(HTTPStatusObserverContextKey).(HTTPStatusObserver); ok {
+			observer.ObserveHTTPStatus(resp.StatusCode)
+		}
 	}
 
 	return resp, err
+}
+
+// WithHTTPStatusObserver returns a context that reports HTTP response codes to observer.
+func WithHTTPStatusObserver(ctx context.Context, observer HTTPStatusObserver) context.Context {
+	if observer == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, HTTPStatusObserverContextKey, observer)
 }
 
 func NewInstrumentedTransport(T http.RoundTripper) *InstrumentedTransport {

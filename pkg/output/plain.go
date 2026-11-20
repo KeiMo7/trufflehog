@@ -34,6 +34,7 @@ func (p *PlainPrinter) Print(_ context.Context, r *detectors.ResultWithMetadata)
 		DecoderType:         r.DecoderType.String(),
 		Verified:            r.Verified,
 		VerificationError:   r.VerificationError(),
+		VerificationStatus:  r.VerificationStatus.String(),
 		MetaData:            r.SourceMetadata,
 		Raw:                 strings.TrimSpace(string(r.Raw)),
 		DetectorDescription: r.DetectorDescription,
@@ -60,6 +61,9 @@ func (p *PlainPrinter) Print(_ context.Context, r *detectors.ResultWithMetadata)
 
 	if r.VerificationFromCache {
 		_, _ = cyanPrinter.Print("(🔍 Using cached verification)\n")
+	}
+	if out.VerificationStatus != "" {
+		_, _ = cyanPrinter.Printf("Verification status: %s\n", out.VerificationStatus)
 	}
 	_, _ = printer.Printf("Detector Type: %s\n", out.DetectorType)
 	_, _ = printer.Printf("Decoder Type: %s\n", out.DecoderType)
@@ -133,9 +137,10 @@ func structToMap(obj any) (m map[string]map[string]any, err error) {
 type outputFormat struct {
 	DetectorType,
 	DecoderType string
-	Verified          bool
-	VerificationError error
-	Raw               string
+	Verified           bool
+	VerificationError  error
+	VerificationStatus string
+	Raw                string
 	*source_metadatapb.MetaData
 	DetectorDescription string
 }

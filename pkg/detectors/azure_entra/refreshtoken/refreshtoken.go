@@ -31,6 +31,7 @@ var _ interface {
 	detectors.Detector
 	detectors.MaxSecretSizeProvider
 	detectors.StartOffsetProvider
+	detectors.SideEffectVerifier
 } = (*Scanner)(nil)
 
 var (
@@ -56,6 +57,10 @@ func (s Scanner) Description() string {
 func (Scanner) MaxSecretSize() int64 { return 2048 }
 
 func (Scanner) StartOffset() int64 { return 4096 }
+
+// VerificationHasSideEffects reports that exchanging a refresh token can rotate it and invalidate the copy found in the
+// scanned repository.
+func (Scanner) VerificationHasSideEffects() bool { return true }
 
 // FromData will find and optionally verify Azure RefreshToken secrets in a given set of bytes.
 func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (results []detectors.Result, err error) {
@@ -127,22 +132,22 @@ func (s Scanner) processMatches(ctx context.Context, refreshTokens, clientIds, t
 							// Tenant doesn't exist. This shouldn't happen with the check above.
 							delete(tenantIds, tenantId)
 							continue
-					} else if errors.Is(verificationErr, ErrClientNotFoundInTenant) {
-						// Tenant is valid but the ClientID doesn't exist.
-						invalidClients[clientId] = struct{}{}
-						continue
-					} else if errors.Is(verificationErr, ErrTokenExpired) {
-						// Token has expired; break to the r==nil block which applies
-						// confidence-adjusted clientId/tenantId before creating the result.
-						break ClientLoop
-					} else if errors.Is(verificationErr, ErrTokenRevoked) {
-						// Token was explicitly revoked; same as above.
-						break ClientLoop
-					} else {
-						// Received an unexpected/unhandled error type.
-						r = createResult(token, clientId, tenantId, isVerified, extraData, verificationErr)
-						break ClientLoop
-					}
+						} else if errors.Is(verificationErr, ErrClientNotFoundInTenant) {
+							// Tenant is valid but the ClientID doesn't exist.
+							invalidClients[clientId] = struct{}{}
+							continue
+						} else if errors.Is(verificationErr, ErrTokenExpired) {
+							// Token has expired; break to the r==nil block which applies
+							// confidence-adjusted clientId/tenantId before creating the result.
+							break ClientLoop
+						} else if errors.Is(verificationErr, ErrTokenRevoked) {
+							// Token was explicitly revoked; same as above.
+							break ClientLoop
+						} else {
+							// Received an unexpected/unhandled error type.
+							r = createResult(token, clientId, tenantId, isVerified, extraData, verificationErr)
+							break ClientLoop
+						}
 					}
 
 					// The result is verified or there's only one associated client and tenant.

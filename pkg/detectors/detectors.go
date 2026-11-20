@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/trufflesecurity/trufflehog/v3/pkg/detectors/verifierauth"
@@ -116,6 +117,18 @@ type Result struct {
 	DetectorName string
 	// Verified indicates whether the result was verified or not.
 	Verified bool
+	// VerificationStatus records the classification of the most recent verification attempt. It is only populated when
+	// verification outcome tracking is enabled by the caller.
+	VerificationStatus VerificationStatus
+	// VerificationStatusCode is the HTTP status code observed by the verifier, when one is available. Transport
+	// failures and non-HTTP verifiers leave it at zero.
+	VerificationStatusCode int
+	// VerificationCheckedAt is when the latest verification outcome was recorded.
+	VerificationCheckedAt time.Time
+	// VerificationExpiresAt is when the cached verification outcome stops being reusable.
+	VerificationExpiresAt time.Time
+	// VerificationRetryAfter is the earliest time a retryable failure may be attempted again.
+	VerificationRetryAfter time.Time
 	// VerificationFromCache indicates whether this result's verification result came from the verification cache rather
 	// than an actual remote request.
 	VerificationFromCache bool
@@ -127,6 +140,9 @@ type Result struct {
 	// result still reports as unverified (or with an overlap verification error) exactly as it would without this
 	// field.
 	VerificationSkipped bool
+	// VerificationSideEffects marks a credential whose verification endpoint mutates provider state. It is populated by
+	// detectors that contain both side-effecting and safe credential types.
+	VerificationSideEffects bool
 	// Raw contains the raw secret identifier data. Prefer IDs over secrets since it is used for deduping after hashing.
 	Raw []byte
 	// RawV2 contains the raw secret identifier that is a combination of both the ID and the secret.
@@ -168,6 +184,11 @@ type Result struct {
 func (r *Result) CopyVerificationInfo(from *Result) {
 	r.Verified = from.Verified
 	r.verificationError = from.verificationError
+	r.VerificationStatus = from.VerificationStatus
+	r.VerificationStatusCode = from.VerificationStatusCode
+	r.VerificationCheckedAt = from.VerificationCheckedAt
+	r.VerificationExpiresAt = from.VerificationExpiresAt
+	r.VerificationRetryAfter = from.VerificationRetryAfter
 }
 
 // SetVerificationError is the only way to set a new verification error. Any sensitive values should be passed-in as secrets to be redacted.
@@ -180,6 +201,11 @@ func (r *Result) SetVerificationError(err error, secrets ...string) {
 // Public accessors for the fields could also be provided if needed.
 func (r *Result) VerificationError() error {
 	return r.verificationError
+}
+
+// ClearVerificationError removes a previously recorded verification error.
+func (r *Result) ClearVerificationError() {
+	r.verificationError = nil
 }
 
 // SetPrimarySecretValue set the value passed as primary secret in the result
@@ -431,4 +457,47 @@ func DoWithDedup(client *http.Client, detType detector_typepb.DetectorType, cred
 // verification cache verify only cache misses instead of re-verifying an entire chunk.
 type ResultVerifier interface {
 	VerifyResult(ctx context.Context, result *Result)
+}
+
+// ResultValidator lets a detector reject a result before any verification request is sent. This is used for cheap,
+// local format checks whose failure is definitive: an invalid credential must not consume a provider request.
+type ResultValidator interface {
+	ValidateResult(result *Result) error
+}
+
+// SideEffectVerifier marks detectors whose verification endpoint mutates provider state, for example by rotating a
+// refresh token or invalidating a previous session. Such verification is skipped unless explicitly enabled.
+type SideEffectVerifier interface {
+	VerificationHasSideEffects() bool
+}
+
+// ResultSideEffectVerifier marks individual results whose verification mutates provider state.
+type ResultSideEffectVerifier interface {
+	VerificationHasSideEffectsForResult(result Result) bool
+}
+
+// VerificationStatus is the stable classification of a verification outcome.
+type VerificationStatus int
+
+const (
+	VerificationStatusUnspecified VerificationStatus = iota
+	VerificationStatusValid
+	VerificationStatusInvalid
+	VerificationStatusUnverified
+	VerificationStatusPendingManualConfirmation
+)
+
+func (s VerificationStatus) String() string {
+	switch s {
+	case VerificationStatusValid:
+		return "valid"
+	case VerificationStatusInvalid:
+		return "invalid"
+	case VerificationStatusUnverified:
+		return "unverified"
+	case VerificationStatusPendingManualConfirmation:
+		return "pending_manual_confirmation"
+	default:
+		return ""
+	}
 }
