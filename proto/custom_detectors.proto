@@ -22,6 +22,58 @@ message CustomRegex {
   repeated string exclude_regexes_match = 9;
   string primary_regex_name = 10;
   map<string, ValidationConfig> validations = 11;
+
+  // Priority orders this custom detector relative to the other custom
+  // detectors. Higher values run first. When omitted it is 0, so an
+  // undeclared detector runs after every detector with a positive priority
+  // and, among detectors with the same priority, detectors are ordered by
+  // name. Built-in detectors are not affected.
+  int32 priority = 12;
+
+  // Source types this detector is enabled for. Empty means every source
+  // type. Each entry is a sources.SourceType enum name, with or without the
+  // SOURCE_TYPE_ prefix, or one of the groups "git", "filesystem",
+  // "object_storage", or "all". Detectors whose scope does not include a
+  // chunk's source type are not registered in that source's prefilter.
+  repeated string source_types = 13;
+
+  // Disabled removes the detector from scanning. Its keywords do not enter
+  // the prefilter, it is never executed, and it produces no results. This is
+  // equivalent to listing the detector under CustomDetectorPolicy.exclude.
+  bool disabled = 14;
+}
+
+// CustomDetectorPolicy declares cross-detector ordering, exclusion, and
+// short-circuit behavior. It applies only to custom detectors.
+message CustomDetectorPolicy {
+  // Hard ordering constraints: the detector named by before always runs
+  // before the detector named by after, even when their priority values say
+  // otherwise. A cycle is a startup error.
+  repeated DetectorPrecedence precedence = 1;
+
+  // Names of custom detectors that must not run.
+  repeated string exclude = 2;
+
+  // When true, once the highest-priority custom detector's keyword matches a
+  // chunk, lower-priority custom detectors are not run on that chunk. When
+  // false (the default) every matching custom detector has a chance to
+  // produce a conclusion.
+  bool short_circuit = 3;
+
+  // Priority overrides by detector name. An entry takes precedence over the
+  // detector's own priority field. Naming a detector that is not registered
+  // is a startup error, so a typo can never silently reorder nothing.
+  repeated DetectorPriority priorities = 4;
+}
+
+message DetectorPriority {
+  string name = 1;
+  int32 priority = 2;
+}
+
+message DetectorPrecedence {
+  string before = 1;
+  string after = 2;
 }
 
 

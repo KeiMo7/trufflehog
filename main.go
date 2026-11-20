@@ -674,6 +674,7 @@ func run(state overseer.State, logSync func() error) {
 		// user. The filters are applied by the engine and are only
 		// subtractive.
 		Detectors:                append(defaults.DefaultDetectors(), conf.Detectors...),
+		CustomDetectorRegistry:   conf.CustomDetectorRegistry,
 		Verify:                   !*noVerification,
 		IncludeDetectors:         *includeDetectors,
 		ExcludeDetectors:         *excludeDetectors,

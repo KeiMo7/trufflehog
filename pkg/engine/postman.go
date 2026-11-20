@@ -51,7 +51,7 @@ func (e *Engine) ScanPostman(ctx context.Context, c sources.PostmanConfig) (sour
 	ctx = withSourceFields(ctx, sourceName, postman.SourceType, sourceID, jobID)
 
 	postmanSource := &postman.Source{
-		DetectorKeywords: e.AhoCorasickCoreKeywords(),
+		DetectorKeywords: e.AhoCorasickCoreKeywordsForSource(postman.SourceType),
 	}
 
 	if err := postmanSource.Init(ctx, sourceName, jobID, sourceID, true, &conn, c.Concurrency); err != nil {

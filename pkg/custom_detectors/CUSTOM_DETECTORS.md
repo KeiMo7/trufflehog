@@ -107,9 +107,48 @@ This guide will walk you through setting up a custom detector in TruffleHog to i
      - **`contains_lowercase`**: Ensures the match contains at least one lowercase letter (a-z). Common requirement for passwords and mixed-case tokens.
      - **`contains_uppercase`**: Ensures the match contains at least one uppercase letter (A-Z). Helps validate tokens that follow mixed-case conventions.
      - **`contains_special_char`**: Ensures the match contains at least one special character from the set `!@#$%^&*()_+-=[]{}|;:,.<>?`. Useful for complex passwords or encoded tokens.
-    
+   - **`priority`**: Orders this custom detector relative to the other custom detectors. A higher number runs first. When omitted it is `0`, so an undeclared detector runs after every detector with a positive priority; detectors with the same priority are ordered by name. Priority only orders detectors of the same type and never changes which built-in detector runs first.
+   - **`source_types`**: Restricts the detector to the listed source types. An empty list (the default) means every source type. Entries are case-insensitive and may be a group name (`repository`, `filesystem`, `object_storage`), a source type enum name (`S3` or `SOURCE_TYPE_S3`), or `all`. A detector whose scope does not include a chunk's source type is removed from that source's keyword prefilter, so its keywords can never trigger it there.
+   - **`disabled`**: Removes the detector from scanning. Its keywords do not enter the prefilter, it is never executed, and it produces no results. This is the per-detector spelling of `customDetectorPolicy.exclude`.
 
-    [Here](/examples/generic_with_filters.yml) is an example of a custom detector using these parameters. 
+#### Ordering, exclusion, and short-circuiting
+
+A top-level `customDetectorPolicy` block controls how custom detectors relate to each other:
+
+```yaml
+detectors:
+  - name: team-a-secret
+    keywords: [team_a]
+    regex:
+      token: '(team_a_[A-Za-z0-9]{20})'
+    priority: 20
+  - name: generic-token
+    keywords: [team_a]
+    regex:
+      token: '([A-Za-z0-9]{20})'
+    priority: 10
+  - name: noisy-detector
+    keywords: [team_a]
+    regex:
+      token: '([A-Za-z0-9]{20})'
+
+customDetectorPolicy:
+  exclude:
+    - noisy-detector
+  precedence:
+    - before: generic-token
+      after: team-a-secret
+  shortCircuit: true
+```
+
+- **`exclude`**: Names detectors that must not run, even when their keywords match. This is a hard exclusion: the detector is not executed, produces no result, and is not counted. Every listed name must be a registered detector; a typo fails startup instead of being ignored. Excluding every detector is allowed, but the engine logs that custom detector scanning is disabled so that an empty result is not mistaken for a clean scan.
+- **`precedence`**: Hard ordering constraints by name. `before` always runs before `after`, even when the priority numbers say otherwise. A cycle (A before B, B before A) is rejected at startup and the conflicting pair is named.
+- **`priorities`**: Priority overrides by detector name, for when one policy block should own the order without editing each detector. An override takes precedence over the detector's own `priority` field. Naming a detector that is not registered fails startup.
+- **`shortCircuit`**: When `true`, once the highest-priority matching custom detector's keyword hits a chunk, the lower-priority custom detectors are not run on that chunk. When `false` (the default), every matching detector gets a chance to produce a conclusion. Short-circuiting is decided from the keyword match before any detector runs, so it is deterministic.
+
+**Duplicate names are rejected.** A custom detector's name is part of its identity: it labels results, ordering rules refer to it, and the prefilter keeps one entry per name. Two detectors with the same name therefore fail registration with an error that names the duplicate. Keyword validation also rejects an empty keyword and a keyword repeated (case-insensitively) within one detector; two different detectors may declare the same keyword, and both are kept. All registration errors are reported together, each naming the offending detector.
+
+[Here](/examples/generic_with_filters.yml) is an example of a custom detector using these parameters. 
 
 3. **Run TruffleHog with the Custom Detector**:
    - Execute TruffleHog, specifying your configuration file:

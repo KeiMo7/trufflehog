@@ -12,6 +12,7 @@ import (
 	"regexp" //nolint:depguard // used instead of github.com/wasilibs/go-re2 due to differences in utf-8 handling
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"golang.org/x/sync/errgroup"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/trufflesecurity/trufflehog/v3/pkg/detectors/verifierauth"
 	"github.com/trufflesecurity/trufflehog/v3/pkg/pb/custom_detectorspb"
 	"github.com/trufflesecurity/trufflehog/v3/pkg/pb/detector_typepb"
+	"github.com/trufflesecurity/trufflehog/v3/pkg/pb/sourcespb"
 )
 
 // The maximum number of matches from one chunk. This const is used when
@@ -39,6 +41,15 @@ type CustomRegexWebhook struct {
 	// endpoint. They are built once here so every verification for an auth
 	// config shares one cached token.
 	verifyClients []*http.Client
+
+	// scope holds the parsed source_types field. The zero value covers every
+	// source type.
+	scope SourceScope
+
+	// executions counts FromData calls. It exists so callers and tests can
+	// tell "the detector ran and found nothing" apart from "the detector was
+	// excluded and never ran".
+	executions atomic.Int64
 }
 
 // Ensure the Scanner satisfies the interface at compile time.
@@ -51,6 +62,10 @@ func NewWebhookCustomRegex(pb *custom_detectorspb.CustomRegex) (*CustomRegexWebh
 	// TODO: Return all validation errors.
 	if err := ValidateKeywords(pb.Keywords); err != nil {
 		return nil, err
+	}
+	scope, err := ParseSourceScope(pb.GetSourceTypes())
+	if err != nil {
+		return nil, fmt.Errorf("source_types: %w", err)
 	}
 	if err := ValidateRegex(pb.Regex); err != nil {
 		return nil, err
@@ -100,7 +115,7 @@ func NewWebhookCustomRegex(pb *custom_detectorspb.CustomRegex) (*CustomRegexWebh
 	ensurePrimaryRegexNameSet(pb)
 
 	// TODO: Copy only necessary data out of pb.
-	return &CustomRegexWebhook{CustomRegex: pb, verifyClients: verifyClients}, nil
+	return &CustomRegexWebhook{CustomRegex: pb, verifyClients: verifyClients, scope: scope}, nil
 }
 
 // validateHeadersAvoidTokenHeader rejects a verify headers entry for the
@@ -131,6 +146,7 @@ func (c *CustomRegexWebhook) verifyClient(i int) *http.Client {
 var httpClient = common.SaneHttpClient()
 
 func (c *CustomRegexWebhook) FromData(ctx context.Context, verify bool, data []byte) (results []detectors.Result, err error) {
+	c.executions.Add(1)
 	dataStr := string(data)
 	regexMatches := make(map[string][][]string, len(c.GetRegex()))
 
@@ -462,6 +478,21 @@ func storeResponseBody(resp *http.Response, extraData map[string]string) {
 
 func (c *CustomRegexWebhook) Keywords() []string {
 	return c.GetKeywords()
+}
+
+// Scope returns the source types this detector is enabled for. A detector
+// built without going through NewWebhookCustomRegex has the zero scope, which
+// covers every source type.
+func (c *CustomRegexWebhook) Scope() SourceScope {
+	return c.scope
+}
+
+// ExecutionCount returns the number of FromData calls made on this detector.
+func (c *CustomRegexWebhook) ExecutionCount() int64 { return c.executions.Load() }
+
+// AppliesToSource reports whether the detector is enabled for sourceType.
+func (c *CustomRegexWebhook) AppliesToSource(sourceType sourcespb.SourceType) bool {
+	return c.scope.Includes(sourceType)
 }
 
 // productIndices produces a permutation of indices for each length. Example:

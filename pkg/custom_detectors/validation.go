@@ -14,10 +14,21 @@ func ValidateKeywords(keywords []string) error {
 		return fmt.Errorf("no keywords")
 	}
 
+	seen := make(map[string]string, len(keywords))
 	for _, keyword := range keywords {
 		if len(keyword) == 0 {
 			return fmt.Errorf("empty keyword")
 		}
+		// Keywords are matched case-insensitively, so two spellings that
+		// differ only in case are the same keyword and would register twice.
+		folded := strings.ToLower(keyword)
+		if previous, ok := seen[folded]; ok {
+			if previous == keyword {
+				return fmt.Errorf("duplicate keyword %q", keyword)
+			}
+			return fmt.Errorf("duplicate keyword %q (also declared as %q)", keyword, previous)
+		}
+		seen[folded] = keyword
 	}
 	return nil
 }

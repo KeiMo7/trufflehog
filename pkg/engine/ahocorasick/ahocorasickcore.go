@@ -10,6 +10,7 @@ import (
 	"github.com/trufflesecurity/trufflehog/v3/pkg/custom_detectors"
 	"github.com/trufflesecurity/trufflehog/v3/pkg/detectors"
 	"github.com/trufflesecurity/trufflehog/v3/pkg/pb/detector_typepb"
+	"github.com/trufflesecurity/trufflehog/v3/pkg/pb/sourcespb"
 )
 
 // lowerBuf is a reusable buffer holding the lowercased copy of one chunk.
@@ -91,6 +92,10 @@ type DetectorKey struct {
 	detectorType       detector_typepb.DetectorType
 	version            int
 	customDetectorName string
+	// priority is the explicitly declared priority of the detector, or 0 when
+	// it declares none. It orders detectors of the same type; it is never
+	// derived from the type enum.
+	priority int32
 }
 
 func (k DetectorKey) Loggable() map[string]any {
@@ -107,11 +112,18 @@ func (k DetectorKey) Loggable() map[string]any {
 // Type returns the detector type of the key.
 func (k DetectorKey) Type() detector_typepb.DetectorType { return k.detectorType }
 
-// compare orders keys by detector type, version, and custom detector name so that the result order does not depend on
-// map iteration. The type order is the protobuf enum value, which is assignment history, not priority.
+// Priority returns the explicitly declared priority of the key.
+func (k DetectorKey) Priority() int32 { return k.priority }
+
+// compare orders keys by detector type, then priority (highest first), then
+// version and custom detector name so that the result order does not depend on
+// map iteration. The type order is the protobuf enum value, which is
+// assignment history, not priority; priority only orders detectors that share
+// a type, which is where the old type order said nothing.
 func (k DetectorKey) compare(other DetectorKey) int {
 	return cmp.Or(
 		cmp.Compare(k.detectorType, other.detectorType),
+		cmp.Compare(other.priority, k.priority),
 		cmp.Compare(k.version, other.version),
 		cmp.Compare(k.customDetectorName, other.customDetectorName),
 	)
@@ -212,6 +224,22 @@ type Core struct {
 	keywordsToDetectors map[string][]DetectorKey
 	detectorsByKey      map[DetectorKey]detectors.Detector
 	spanCalculator      spanCalculator // Strategy for calculating match spans
+
+	// scoped reports whether at least one detector is limited to some source
+	// types. When it is false every detector applies everywhere and the
+	// per-source view is the global one, so no extra structures are built.
+	scoped bool
+	// sourceMu guards sourcePrefilters, which is filled lazily so scans that
+	// never see a scoped detector never pay for the per-source views.
+	sourceMu         sync.Mutex
+	sourcePrefilters map[sourcespb.SourceType]*sourcePrefilter
+}
+
+// sourcePrefilter is the keyword view for one source type: only detectors
+// enabled for that source type appear in it.
+type sourcePrefilter struct {
+	trie                ahocorasick.Trie
+	keywordsToDetectors map[string][]DetectorKey
 }
 
 // NewAhoCorasickCore allocates and initializes a new instance of AhoCorasickCore. It uses the
@@ -221,9 +249,13 @@ func NewAhoCorasickCore(allDetectors []detectors.Detector, opts ...CoreOption) *
 	keywordsToDetectors := make(map[string][]DetectorKey)
 	detectorsByKey := make(map[DetectorKey]detectors.Detector, len(allDetectors))
 	var keywords []string
+	scoped := false
 	for _, d := range allDetectors {
 		key := CreateDetectorKey(d)
 		detectorsByKey[key] = d
+		if custom, ok := d.(*custom_detectors.CustomRegexWebhook); ok && !custom.Scope().IsAll() {
+			scoped = true
+		}
 		for _, kw := range d.Keywords() {
 			// Fold the keyword exactly the way FindDetectorMatches folds the
 			// chunk it searches, so the two sides can never disagree.
@@ -239,6 +271,7 @@ func NewAhoCorasickCore(allDetectors []detectors.Detector, opts ...CoreOption) *
 		detectorsByKey:      detectorsByKey,
 		prefilter:           *ahocorasick.NewTrieBuilder().AddStrings(keywords).Build(),
 		spanCalculator:      newAdjustableSpanCalculator(defaultOffsetRadius), // Default span calculator
+		scoped:              scoped,
 	}
 
 	for _, opt := range opts {
@@ -246,6 +279,51 @@ func NewAhoCorasickCore(allDetectors []detectors.Detector, opts ...CoreOption) *
 	}
 
 	return core
+}
+
+// prefilterForSource returns the keyword view for sourceType. When no
+// detector is scoped, every detector applies everywhere and the global view
+// is returned unchanged.
+func (ac *Core) prefilterForSource(sourceType sourcespb.SourceType) *sourcePrefilter {
+	if !ac.scoped {
+		return &sourcePrefilter{
+			trie:                ac.prefilter,
+			keywordsToDetectors: ac.keywordsToDetectors,
+		}
+	}
+
+	ac.sourceMu.Lock()
+	defer ac.sourceMu.Unlock()
+	if ac.sourcePrefilters == nil {
+		ac.sourcePrefilters = make(map[sourcespb.SourceType]*sourcePrefilter)
+	}
+	if existing, ok := ac.sourcePrefilters[sourceType]; ok {
+		return existing
+	}
+
+	keywordsToDetectors := make(map[string][]DetectorKey)
+	// Building from detectorsByKey (a map) gives no meaningful order, but
+	// FindDetectorMatches sorts its output, so the result is still stable.
+	for key, detector := range ac.detectorsByKey {
+		if custom, ok := detector.(*custom_detectors.CustomRegexWebhook); ok &&
+			!custom.AppliesToSource(sourceType) {
+			continue
+		}
+		for _, kw := range detector.Keywords() {
+			kwFolded := string(appendASCIILower(nil, []byte(kw)))
+			keywordsToDetectors[kwFolded] = append(keywordsToDetectors[kwFolded], key)
+		}
+	}
+	keywords := make([]string, 0, len(keywordsToDetectors))
+	for kw := range keywordsToDetectors {
+		keywords = append(keywords, kw)
+	}
+	built := &sourcePrefilter{
+		trie:                *ahocorasick.NewTrieBuilder().AddStrings(keywords).Build(),
+		keywordsToDetectors: keywordsToDetectors,
+	}
+	ac.sourcePrefilters[sourceType] = built
+	return built
 }
 
 // DetectorMatch represents a detected pattern's metadata in a data chunk.
@@ -320,6 +398,25 @@ func (d *DetectorMatch) Matches() [][]byte { return d.matches }
 //
 // The matches field contains the actual byte slices of the matched portions from the chunk data.
 func (ac *Core) FindDetectorMatches(chunkData []byte) []*DetectorMatch {
+	return ac.findDetectorMatches(chunkData, nil)
+}
+
+// FindDetectorMatchesForSource finds the matching detectors for a chunk and
+// only returns detectors enabled for sourceType. Custom detectors with a
+// source_types scope that does not include sourceType are omitted, including
+// detector types whose keywords would otherwise match. The result order is the
+// same as FindDetectorMatches.
+func (ac *Core) FindDetectorMatchesForSource(
+	chunkData []byte,
+	sourceType sourcespb.SourceType,
+) []*DetectorMatch {
+	view := ac.prefilterForSource(sourceType)
+	return ac.findDetectorMatches(chunkData, view)
+}
+
+// findDetectorMatches runs the prefilter in view, or the global prefilter when
+// view is nil.
+func (ac *Core) findDetectorMatches(chunkData []byte, view *sourcePrefilter) []*DetectorMatch {
 	// Search a lowercased copy so matching ignores case, but keep reporting
 	// positions against the original chunk, which is what the spans below cut
 	// from. The copy is borrowed and returned so it costs no allocation.
@@ -327,7 +424,14 @@ func (ac *Core) FindDetectorMatches(chunkData []byte) []*DetectorMatch {
 	defer putLowerBuf(lowered)
 	lowered.b = appendASCIILower(lowered.b[:0], chunkData)
 
-	matches := ac.prefilter.Match(lowered.b)
+	prefilter := &ac.prefilter
+	keywordsToDetectors := ac.keywordsToDetectors
+	if view != nil {
+		prefilter = &view.trie
+		keywordsToDetectors = view.keywordsToDetectors
+	}
+
+	matches := prefilter.Match(lowered.b)
 
 	matchCount := len(matches)
 	if matchCount == 0 {
@@ -337,7 +441,7 @@ func (ac *Core) FindDetectorMatches(chunkData []byte) []*DetectorMatch {
 	detectorMatches := make(map[DetectorKey]*DetectorMatch)
 
 	for _, m := range matches {
-		for _, k := range ac.keywordsToDetectors[m.MatchString()] {
+		for _, k := range keywordsToDetectors[m.MatchString()] {
 			if _, exists := detectorMatches[k]; !exists {
 				detector := ac.detectorsByKey[k]
 				detectorMatches[k] = &DetectorMatch{
@@ -375,7 +479,7 @@ func (ac *Core) FindDetectorMatches(chunkData []byte) []*DetectorMatch {
 	return uniqueDetectors
 }
 
-// CreateDetectorKey creates a unique key for each detector from its type, version, and, for
+// CreateDetectorKey creates a unique key for each detector from its type, version, priority, and, for
 // custom regex detectors, its name.
 func CreateDetectorKey(d detectors.Detector) DetectorKey {
 	detectorType := d.Type()
@@ -383,13 +487,35 @@ func CreateDetectorKey(d detectors.Detector) DetectorKey {
 	if v, ok := d.(detectors.Versioner); ok {
 		version = v.Version()
 	}
+	var priority int32
+	if p, ok := d.(detectors.PriorityProvider); ok {
+		priority = p.Priority()
+	}
 	var customDetectorName string
 	if r, ok := d.(*custom_detectors.CustomRegexWebhook); ok {
 		customDetectorName = r.GetName()
 	}
-	return DetectorKey{detectorType: detectorType, version: version, customDetectorName: customDetectorName}
+	return DetectorKey{
+		detectorType:       detectorType,
+		version:            version,
+		customDetectorName: customDetectorName,
+		priority:           priority,
+	}
 }
 
 func (ac *Core) KeywordsToDetectors() map[string][]DetectorKey {
 	return ac.keywordsToDetectors
+}
+
+// KeywordsForSource returns the keywords that can trigger a detector for the
+// given source type. It is the keyword set of the per-source prefilter, so it
+// never contains a keyword that belongs only to a detector scoped away from
+// that source.
+func (ac *Core) KeywordsForSource(sourceType sourcespb.SourceType) map[string]struct{} {
+	view := ac.prefilterForSource(sourceType)
+	keywords := make(map[string]struct{}, len(view.keywordsToDetectors))
+	for keyword := range view.keywordsToDetectors {
+		keywords[keyword] = struct{}{}
+	}
+	return keywords
 }

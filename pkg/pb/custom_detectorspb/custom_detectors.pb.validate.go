@@ -281,6 +281,10 @@ func (m *CustomRegex) validate(all bool) error {
 		}
 	}
 
+	// no validation rules for Priority
+
+	// no validation rules for Disabled
+
 	if len(errors) > 0 {
 		return CustomRegexMultiError(errors)
 	}
@@ -357,6 +361,388 @@ var _ interface {
 	Cause() error
 	ErrorName() string
 } = CustomRegexValidationError{}
+
+// Validate checks the field values on CustomDetectorPolicy with the rules
+// defined in the proto definition for this message. If any rules are
+// violated, the first error encountered is returned, or nil if there are no violations.
+func (m *CustomDetectorPolicy) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on CustomDetectorPolicy with the rules
+// defined in the proto definition for this message. If any rules are
+// violated, the result is a list of violation errors wrapped in
+// CustomDetectorPolicyMultiError, or nil if none found.
+func (m *CustomDetectorPolicy) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *CustomDetectorPolicy) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	for idx, item := range m.GetPrecedence() {
+		_, _ = idx, item
+
+		if all {
+			switch v := interface{}(item).(type) {
+			case interface{ ValidateAll() error }:
+				if err := v.ValidateAll(); err != nil {
+					errors = append(errors, CustomDetectorPolicyValidationError{
+						field:  fmt.Sprintf("Precedence[%v]", idx),
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			case interface{ Validate() error }:
+				if err := v.Validate(); err != nil {
+					errors = append(errors, CustomDetectorPolicyValidationError{
+						field:  fmt.Sprintf("Precedence[%v]", idx),
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			}
+		} else if v, ok := interface{}(item).(interface{ Validate() error }); ok {
+			if err := v.Validate(); err != nil {
+				return CustomDetectorPolicyValidationError{
+					field:  fmt.Sprintf("Precedence[%v]", idx),
+					reason: "embedded message failed validation",
+					cause:  err,
+				}
+			}
+		}
+
+	}
+
+	// no validation rules for ShortCircuit
+
+	for idx, item := range m.GetPriorities() {
+		_, _ = idx, item
+
+		if all {
+			switch v := interface{}(item).(type) {
+			case interface{ ValidateAll() error }:
+				if err := v.ValidateAll(); err != nil {
+					errors = append(errors, CustomDetectorPolicyValidationError{
+						field:  fmt.Sprintf("Priorities[%v]", idx),
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			case interface{ Validate() error }:
+				if err := v.Validate(); err != nil {
+					errors = append(errors, CustomDetectorPolicyValidationError{
+						field:  fmt.Sprintf("Priorities[%v]", idx),
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			}
+		} else if v, ok := interface{}(item).(interface{ Validate() error }); ok {
+			if err := v.Validate(); err != nil {
+				return CustomDetectorPolicyValidationError{
+					field:  fmt.Sprintf("Priorities[%v]", idx),
+					reason: "embedded message failed validation",
+					cause:  err,
+				}
+			}
+		}
+
+	}
+
+	if len(errors) > 0 {
+		return CustomDetectorPolicyMultiError(errors)
+	}
+
+	return nil
+}
+
+// CustomDetectorPolicyMultiError is an error wrapping multiple validation
+// errors returned by CustomDetectorPolicy.ValidateAll() if the designated
+// constraints aren't met.
+type CustomDetectorPolicyMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m CustomDetectorPolicyMultiError) Error() string {
+	var msgs []string
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m CustomDetectorPolicyMultiError) AllErrors() []error { return m }
+
+// CustomDetectorPolicyValidationError is the validation error returned by
+// CustomDetectorPolicy.Validate if the designated constraints aren't met.
+type CustomDetectorPolicyValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e CustomDetectorPolicyValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e CustomDetectorPolicyValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e CustomDetectorPolicyValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e CustomDetectorPolicyValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e CustomDetectorPolicyValidationError) ErrorName() string {
+	return "CustomDetectorPolicyValidationError"
+}
+
+// Error satisfies the builtin error interface
+func (e CustomDetectorPolicyValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sCustomDetectorPolicy.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = CustomDetectorPolicyValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = CustomDetectorPolicyValidationError{}
+
+// Validate checks the field values on DetectorPriority with the rules defined
+// in the proto definition for this message. If any rules are violated, the
+// first error encountered is returned, or nil if there are no violations.
+func (m *DetectorPriority) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on DetectorPriority with the rules
+// defined in the proto definition for this message. If any rules are
+// violated, the result is a list of violation errors wrapped in
+// DetectorPriorityMultiError, or nil if none found.
+func (m *DetectorPriority) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *DetectorPriority) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	// no validation rules for Name
+
+	// no validation rules for Priority
+
+	if len(errors) > 0 {
+		return DetectorPriorityMultiError(errors)
+	}
+
+	return nil
+}
+
+// DetectorPriorityMultiError is an error wrapping multiple validation errors
+// returned by DetectorPriority.ValidateAll() if the designated constraints
+// aren't met.
+type DetectorPriorityMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m DetectorPriorityMultiError) Error() string {
+	var msgs []string
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m DetectorPriorityMultiError) AllErrors() []error { return m }
+
+// DetectorPriorityValidationError is the validation error returned by
+// DetectorPriority.Validate if the designated constraints aren't met.
+type DetectorPriorityValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e DetectorPriorityValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e DetectorPriorityValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e DetectorPriorityValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e DetectorPriorityValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e DetectorPriorityValidationError) ErrorName() string { return "DetectorPriorityValidationError" }
+
+// Error satisfies the builtin error interface
+func (e DetectorPriorityValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sDetectorPriority.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = DetectorPriorityValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = DetectorPriorityValidationError{}
+
+// Validate checks the field values on DetectorPrecedence with the rules
+// defined in the proto definition for this message. If any rules are
+// violated, the first error encountered is returned, or nil if there are no violations.
+func (m *DetectorPrecedence) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on DetectorPrecedence with the rules
+// defined in the proto definition for this message. If any rules are
+// violated, the result is a list of violation errors wrapped in
+// DetectorPrecedenceMultiError, or nil if none found.
+func (m *DetectorPrecedence) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *DetectorPrecedence) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	// no validation rules for Before
+
+	// no validation rules for After
+
+	if len(errors) > 0 {
+		return DetectorPrecedenceMultiError(errors)
+	}
+
+	return nil
+}
+
+// DetectorPrecedenceMultiError is an error wrapping multiple validation errors
+// returned by DetectorPrecedence.ValidateAll() if the designated constraints
+// aren't met.
+type DetectorPrecedenceMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m DetectorPrecedenceMultiError) Error() string {
+	var msgs []string
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m DetectorPrecedenceMultiError) AllErrors() []error { return m }
+
+// DetectorPrecedenceValidationError is the validation error returned by
+// DetectorPrecedence.Validate if the designated constraints aren't met.
+type DetectorPrecedenceValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e DetectorPrecedenceValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e DetectorPrecedenceValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e DetectorPrecedenceValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e DetectorPrecedenceValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e DetectorPrecedenceValidationError) ErrorName() string {
+	return "DetectorPrecedenceValidationError"
+}
+
+// Error satisfies the builtin error interface
+func (e DetectorPrecedenceValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sDetectorPrecedence.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = DetectorPrecedenceValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = DetectorPrecedenceValidationError{}
 
 // Validate checks the field values on VerifierConfig with the rules defined in
 // the proto definition for this message. If any rules are violated, the first

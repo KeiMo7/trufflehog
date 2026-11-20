@@ -35,6 +35,16 @@ var (
 		[]string{"detector_name"},
 	)
 
+	// detectorSkippedShortCircuit counts custom detectors that a
+	// higher-priority detector suppressed on a chunk because the custom
+	// detector policy enables short-circuiting.
+	detectorsSkippedShortCircuit = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: common.MetricsNamespace,
+		Subsystem: common.MetricsSubsystem,
+		Name:      "custom_detector_short_circuit_skipped_total",
+		Help:      "Total number of custom detector runs skipped by short-circuit priority.",
+	})
+
 	// Timeout-overrun metrics. The overrun timer in detectChunk arms at the detection timeout plus a one-second
 	// grace, so these count calls that ran past that grace deadline, not merely past the bare timeout. The
 	// histogram buckets start at 10 seconds because the execution-duration histogram above tops out near 3

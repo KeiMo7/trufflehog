@@ -66,6 +66,14 @@ type Versioner interface {
 	Version() int
 }
 
+// PriorityProvider is an optional interface a detector can implement to
+// declare where it runs relative to other detectors of the same type. A
+// higher value runs first. Detectors that do not implement it have priority
+// 0. The engine never derives priority from the detector type's enum value.
+type PriorityProvider interface {
+	Priority() int32
+}
+
 // MaxSecretSizeProvider is an optional interface that a detector can implement to
 // provide a custom max size for the secret it finds.
 type MaxSecretSizeProvider interface {

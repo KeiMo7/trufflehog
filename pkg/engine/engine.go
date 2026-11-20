@@ -5,6 +5,7 @@ package engine
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/md5"
 	"encoding/binary"
 	"errors"
@@ -24,6 +25,7 @@ import (
 	"github.com/trufflesecurity/trufflehog/v3/pkg/common"
 	"github.com/trufflesecurity/trufflehog/v3/pkg/config"
 	"github.com/trufflesecurity/trufflehog/v3/pkg/context"
+	"github.com/trufflesecurity/trufflehog/v3/pkg/custom_detectors"
 	"github.com/trufflesecurity/trufflehog/v3/pkg/decoders"
 	"github.com/trufflesecurity/trufflehog/v3/pkg/detectors"
 	"github.com/trufflesecurity/trufflehog/v3/pkg/detectors/verifierauth"
@@ -185,6 +187,11 @@ type Config struct {
 
 	// Max size of the deduplication LRU cache
 	DedupeCacheSize int
+
+	// CustomDetectorRegistry carries the ordering, exclusion, and source-type
+	// scope declared for custom detectors. When nil, the engine builds one
+	// from the custom detectors in Detectors with the default policy.
+	CustomDetectorRegistry *custom_detectors.Registry
 }
 
 // Engine represents the core scanning engine responsible for detecting secrets in input data.
@@ -258,7 +265,11 @@ type Engine struct {
 
 	maxDecodeDepth int
 
+	// dedupeCacheSize is the maximum size of the deduplication LRU cache.
 	dedupeCacheSize int
+
+	// customDetectors owns custom detector ordering, exclusion, and scope.
+	customDetectors *custom_detectors.Registry
 
 	// runtimeCollector exposes live channel/worker/scan counters to Prometheus
 	// while the engine is running. Set in Start, cleared in Finish.
@@ -296,6 +307,41 @@ func NewEngine(ctx context.Context, cfg *Config) (*Engine, error) {
 	}
 
 	engine.setDefaults(ctx)
+
+	// Custom detector ordering, exclusion, and scope. A registry built from
+	// the configuration is authoritative; otherwise one is derived from the
+	// detectors handed to the engine with the default policy, so callers that
+	// build detectors directly get the same semantics.
+	registry := cfg.CustomDetectorRegistry
+	if registry == nil {
+		derived, err := custom_detectors.NewRegistryFromDetectors(engine.detectors, custom_detectors.Policy{})
+		if err != nil {
+			return nil, err
+		}
+		registry = derived
+	}
+	engine.customDetectors = registry
+	if err := registry.EmptySelectionError(); err != nil {
+		// An empty result is allowed, but it must not be mistaken for "the
+		// scan found nothing". Say explicitly that nothing was scanned.
+		ctx.Logger().Info(
+			"every custom detector is excluded; custom detector scanning is disabled",
+			"excluded", registry.Excluded(),
+		)
+	}
+	// Drop custom detectors the policy excludes. Built-in detectors are not
+	// touched. Removing them here keeps their keywords out of the prefilter
+	// entirely, so an excluded detector is never even a candidate.
+	engine.applyFilters(func(d detectors.Detector) bool {
+		custom, ok := d.(*custom_detectors.CustomRegexWebhook)
+		if !ok {
+			return true
+		}
+		if _, registered := registry.Lookup(custom.GetName()); !registered {
+			return true
+		}
+		return registry.Enabled(custom.GetName())
+	})
 
 	// Build include and exclude detector sets for filtering on engine initialization.
 	includeDetectorSet, excludeDetectorSet, err := buildDetectorSets(cfg)
@@ -642,6 +688,13 @@ func (e *Engine) AhoCorasickCoreKeywords() map[string]struct{} {
 	return keywords
 }
 
+// AhoCorasickCoreKeywordsForSource returns the keywords that can trigger a
+// detector for the given source type. A detector scoped to other source types
+// does not contribute any keyword.
+func (e *Engine) AhoCorasickCoreKeywordsForSource(sourceType sourcespb.SourceType) map[string]struct{} {
+	return e.AhoCorasickCore.KeywordsForSource(sourceType)
+}
+
 // HasFoundResults returns true if any results are found.
 func (e *Engine) HasFoundResults() bool {
 	return atomic.LoadUint32(&e.numFoundResults) > 0
@@ -930,6 +983,107 @@ func iterativeDecode(chunk *sources.Chunk, allDecoders []decoders.Decoder, maxDe
 	return results
 }
 
+// applyCustomDetectorPlan applies priority and short-circuit semantics to the
+// detectors a chunk matched.
+//
+// Custom detectors are ordered by the registry's declared order; built-in
+// detectors keep the core's order. When short-circuiting is enabled, only the
+// highest-priority matching custom detector is kept and its lower-priority
+// peers are recorded as skipped. Skipping is decided from the keyword match,
+// before any detector runs, so it is deterministic and costs nothing.
+func (e *Engine) applyCustomDetectorPlan(
+	ctx context.Context,
+	matching []*ahocorasick.DetectorMatch,
+) []*ahocorasick.DetectorMatch {
+	if e.customDetectors == nil || len(matching) == 0 {
+		return matching
+	}
+
+	custom := make([]*custom_detectors.CustomRegexWebhook, 0, len(matching))
+	registered := make(map[*custom_detectors.CustomRegexWebhook]struct{}, len(matching))
+	for _, match := range matching {
+		detector, ok := match.Detector.(*custom_detectors.CustomRegexWebhook)
+		if !ok {
+			continue
+		}
+		if _, ok := e.customDetectors.Rank(detector); !ok {
+			// Not part of the registry (for example a detector handed to the
+			// engine alongside a registry built from config). The policy does
+			// not know it, so leave it alone.
+			continue
+		}
+		custom = append(custom, detector)
+		registered[detector] = struct{}{}
+	}
+	if len(custom) == 0 {
+		return matching
+	}
+
+	plan := e.customDetectors.PlanForMatches(custom)
+	run := make(map[*custom_detectors.CustomRegexWebhook]struct{}, len(plan.Ordered))
+	for _, detector := range plan.Ordered {
+		run[detector] = struct{}{}
+	}
+	if len(plan.Skipped) > 0 {
+		ctx.Logger().V(2).Info(
+			"short-circuiting lower-priority custom detectors",
+			"skipped", names(plan.Skipped),
+		)
+		detectorsSkippedShortCircuit.Add(float64(len(plan.Skipped)))
+	}
+
+	kept := make([]*ahocorasick.DetectorMatch, 0, len(matching))
+	for _, match := range matching {
+		detector, ok := match.Detector.(*custom_detectors.CustomRegexWebhook)
+		if !ok {
+			kept = append(kept, match)
+			continue
+		}
+		if _, isRegistered := registered[detector]; !isRegistered {
+			kept = append(kept, match)
+			continue
+		}
+		if _, ok := run[detector]; ok {
+			kept = append(kept, match)
+		}
+	}
+
+	// The core already sorts matches; re-order only the custom detector
+	// entries by the registry's order, which also encodes hard precedence
+	// rules the core cannot see. Built-in detectors keep their exact
+	// positions, so this cannot reorder anything the registry does not own.
+	customSlots := make([]int, 0, len(kept))
+	ranked := make([]*ahocorasick.DetectorMatch, 0, len(kept))
+	for i, match := range kept {
+		detector, ok := match.Detector.(*custom_detectors.CustomRegexWebhook)
+		if !ok {
+			continue
+		}
+		if _, isRegistered := registered[detector]; !isRegistered {
+			continue
+		}
+		customSlots = append(customSlots, i)
+		ranked = append(ranked, match)
+	}
+	slices.SortStableFunc(ranked, func(a, b *ahocorasick.DetectorMatch) int {
+		aRank, _ := e.customDetectors.Rank(a.Detector.(*custom_detectors.CustomRegexWebhook))
+		bRank, _ := e.customDetectors.Rank(b.Detector.(*custom_detectors.CustomRegexWebhook))
+		return cmp.Compare(aRank, bRank)
+	})
+	for slot, match := range ranked {
+		kept[customSlots[slot]] = match
+	}
+	return kept
+}
+
+func names(detectors []*custom_detectors.CustomRegexWebhook) []string {
+	out := make([]string, 0, len(detectors))
+	for _, detector := range detectors {
+		out = append(out, detector.GetName())
+	}
+	return out
+}
+
 func (e *Engine) scannerWorker(ctx context.Context) {
 	var wgDetect sync.WaitGroup
 	var wgVerificationOverlap sync.WaitGroup
@@ -944,7 +1098,11 @@ func (e *Engine) scannerWorker(ctx context.Context) {
 		decoded := iterativeDecode(chunk, e.decoders, e.maxDecodeDepth)
 
 		for _, d := range decoded {
-			matchingDetectors := e.AhoCorasickCore.FindDetectorMatches(d.Data)
+			// Only detectors enabled for this chunk's source type take part.
+			// Excluded detectors never reach the prefilter; scoped ones are
+			// filtered by the per-source view.
+			matchingDetectors := e.AhoCorasickCore.FindDetectorMatchesForSource(d.Data, d.Chunk.SourceType)
+			matchingDetectors = e.applyCustomDetectorPlan(ctx, matchingDetectors)
 			if len(matchingDetectors) == 0 {
 				chunksDropped.WithLabelValues("scanner", "no_matching_detectors", sourceTypeStr).Inc()
 				continue

@@ -26,6 +26,10 @@ import (
 type Config struct {
 	Sources   []sources.ConfiguredSource
 	Detectors []detectors.Detector
+	// CustomDetectorRegistry is set when the configuration declared custom
+	// detectors. It owns priority ordering, exclusion, and source-type scope
+	// for those detectors.
+	CustomDetectorRegistry *custom_detectors.Registry
 }
 
 // Read parses a given filename into a Config.
@@ -45,13 +49,21 @@ func NewYAML(input []byte) (*Config, error) {
 		return nil, err
 	}
 
+	// Validate the custom detectors and apply their ordering and exclusion
+	// policy before any detector is handed to the engine. Invalid
+	// configuration fails here, naming every offending detector.
+	policy, err := custom_detectors.PolicyFromProto(inputYAML.GetCustomDetectorPolicy())
+	if err != nil {
+		return nil, err
+	}
+	registry, err := custom_detectors.NewRegistry(inputYAML.GetDetectors(), policy)
+	if err != nil {
+		return nil, err
+	}
+
 	// Convert to detectors.
 	var detectorConfigs []detectors.Detector
-	for _, detectorConfig := range inputYAML.Detectors {
-		detector, err := custom_detectors.NewWebhookCustomRegex(detectorConfig)
-		if err != nil {
-			return nil, err
-		}
+	for _, detector := range registry.Detectors() {
 		detectorConfigs = append(detectorConfigs, detector)
 	}
 
@@ -68,8 +80,9 @@ func NewYAML(input []byte) (*Config, error) {
 	}
 
 	return &Config{
-		Detectors: detectorConfigs,
-		Sources:   sourceConfigs,
+		Detectors:              detectorConfigs,
+		Sources:                sourceConfigs,
+		CustomDetectorRegistry: registry,
 	}, nil
 }
 

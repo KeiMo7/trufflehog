@@ -10,4 +10,7 @@ import "custom_detectors.proto";
 message Config {
     repeated sources.LocalSource sources = 9;
     repeated custom_detectors.CustomRegex detectors = 13;
+    // Ordering, exclusion, and short-circuit behavior for the custom
+    // detectors declared above.
+    custom_detectors.CustomDetectorPolicy custom_detector_policy = 14;
 }

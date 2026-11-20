@@ -17,6 +17,7 @@ import (
 	"github.com/trufflesecurity/trufflehog/v3/pkg/engine/defaults"
 	"github.com/trufflesecurity/trufflehog/v3/pkg/pb/custom_detectorspb"
 	"github.com/trufflesecurity/trufflehog/v3/pkg/pb/detector_typepb"
+	"github.com/trufflesecurity/trufflehog/v3/pkg/pb/sourcespb"
 )
 
 const TestDetectorType = -1
@@ -145,6 +146,58 @@ var _ detectors.Detector = (*testDetectorV2)(nil)
 var _ detectors.Versioner = (*testDetectorV1)(nil)
 var _ detectors.Versioner = (*testDetectorV2)(nil)
 var _ detectors.Versioner = (*testDetectorV3)(nil)
+
+// Priority orders detectors of the same type. It must never be derived from
+// the detector type enum, so a detector with a lower enum value but a lower
+// declared priority sorts after one with a higher declared priority.
+func TestFindDetectorMatches_PriorityOrdersSameType(t *testing.T) {
+	lowPriority := customDetectorWithPriority(t, "low", 1)
+	highPriority := customDetectorWithPriority(t, "high", 100)
+	core := NewAhoCorasickCore([]detectors.Detector{lowPriority, highPriority})
+
+	matches := core.FindDetectorMatches([]byte("shared"))
+	require.Len(t, matches, 2)
+	assert.Equal(t, "high", matches[0].Detector.(*custom_detectors.CustomRegexWebhook).GetName())
+	assert.Equal(t, int32(100), matches[0].Key.Priority())
+	assert.Equal(t, "low", matches[1].Detector.(*custom_detectors.CustomRegexWebhook).GetName())
+	assert.Equal(t, int32(1), matches[1].Key.Priority())
+}
+
+// A custom detector scoped to other source types must not appear in the
+// prefilter for a chunk from a source type it does not cover.
+func TestFindDetectorMatchesForSource_Scope(t *testing.T) {
+	repoOnly, err := custom_detectors.NewWebhookCustomRegex(&custom_detectorspb.CustomRegex{
+		Name:        "repo-only",
+		Keywords:    []string{"onlyinrepo"},
+		Regex:       map[string]string{"": ""},
+		SourceTypes: []string{"repository"},
+	})
+	require.NoError(t, err)
+	core := NewAhoCorasickCore([]detectors.Detector{repoOnly})
+
+	assert.Empty(t, core.FindDetectorMatchesForSource(
+		[]byte("onlyinrepo"), sourcespb.SourceType_SOURCE_TYPE_FILESYSTEM))
+	assert.Len(t, core.FindDetectorMatchesForSource(
+		[]byte("onlyinrepo"), sourcespb.SourceType_SOURCE_TYPE_GIT), 1)
+
+	assert.NotContains(t, core.KeywordsForSource(sourcespb.SourceType_SOURCE_TYPE_FILESYSTEM), "onlyinrepo")
+	assert.Contains(t, core.KeywordsForSource(sourcespb.SourceType_SOURCE_TYPE_GIT), "onlyinrepo")
+
+	// The unrestricted entry point still sees every detector.
+	assert.Len(t, core.FindDetectorMatches([]byte("onlyinrepo")), 1)
+}
+
+func customDetectorWithPriority(t *testing.T, name string, priority int32) *custom_detectors.CustomRegexWebhook {
+	t.Helper()
+	detector, err := custom_detectors.NewWebhookCustomRegex(&custom_detectorspb.CustomRegex{
+		Name:     name,
+		Keywords: []string{"shared"},
+		Regex:    map[string]string{"": ""},
+		Priority: priority,
+	})
+	require.NoError(t, err)
+	return detector
+}
 
 func TestAhoCorasickCore_MultipleCustomDetectorsMatchable(t *testing.T) {
 	customDetector1, err := custom_detectors.NewWebhookCustomRegex(&custom_detectorspb.CustomRegex{
