@@ -245,6 +245,9 @@ type unitChunk struct {
 	unit   string
 	output string
 	err    string
+	// incomplete makes ChunkUnit report the unit as not fully scanned, without
+	// failing the job.
+	incomplete bool
 }
 
 type unitChunker struct{ steps []unitChunk }
@@ -276,6 +279,9 @@ func (c *unitChunker) ChunkUnit(ctx context.Context, unit SourceUnit, rep ChunkR
 		if id != step.unit {
 			continue
 		}
+		if step.incomplete {
+			return UnitIncompleteError{Err: fmt.Errorf("%s", step.err)}
+		}
 		if step.err != "" {
 			if err := rep.ChunkErr(ctx, fmt.Errorf("%s", step.err)); err != nil {
 				return err
@@ -289,6 +295,34 @@ func (c *unitChunker) ChunkUnit(ctx context.Context, unit SourceUnit, rep ChunkR
 		}
 	}
 	return nil
+}
+
+// TestSourceManagerIncompleteUnitNotFinished checks that a unit which reports it
+// did not cover its scope is recorded but not added to the finished count, and
+// that the other units still run and finish.
+func TestSourceManagerIncompleteUnitNotFinished(t *testing.T) {
+	input := []unitChunk{
+		{unit: "one", output: "bar"},
+		{unit: "two", incomplete: true, err: "one object unread"},
+		{unit: "three", output: "baz"},
+	}
+	mgr := NewManager(WithBufferedOutput(8), WithSourceUnits())
+	source, err := buildDummy(&unitChunker{input})
+	assert.NoError(t, err)
+
+	ref, err := mgr.EnumerateAndScan(context.Background(), "dummy", source)
+	assert.NoError(t, err)
+	<-ref.Done()
+
+	report := ref.Snapshot()
+	assert.EqualValues(t, len(input), report.TotalUnits)
+	assert.EqualValues(t, len(input)-1, report.FinishedUnits, "the incomplete unit is not counted as finished")
+	assert.Equal(t, 2, int(report.TotalChunks), "the healthy units still ran")
+	assert.NoError(t, report.FatalError(), "an incomplete unit is not a fatal error")
+	assert.NotEmpty(t, report.ChunkError())
+	// The completion percentage is finished units over the enumerable units, so
+	// it cannot reach 100% while a unit is incomplete.
+	assert.Equal(t, 66, report.PercentComplete())
 }
 
 func TestSourceManagerNonFatalError(t *testing.T) {

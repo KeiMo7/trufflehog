@@ -202,6 +202,7 @@ var (
 	gcsExcludeBuckets = gcsScan.Flag("exclude-buckets", "Buckets to exclude from scan. Comma separated list of buckets. Globs are supported").Short('X').Strings()
 	gcsIncludeObjects = gcsScan.Flag("include-objects", "Objects to scan. Comma separated list of objects. you can repeat this flag. Globs are supported").Short('i').Strings()
 	gcsExcludeObjects = gcsScan.Flag("exclude-objects", "Objects to exclude from scan. Comma separated list of objects. You can repeat this flag. Globs are supported").Short('x').Strings()
+	gcsUnitPrefixes   = gcsScan.Flag("unit-prefix", "Split each bucket into one independently scannable unit per key prefix, so units can be scanned and resumed separately. You can repeat this flag.").Strings()
 	gcsMaxObjectSize  = gcsScan.Flag("max-object-size", "Maximum size of objects to scan. Objects larger than this will be skipped. (Byte units eg. 512B, 2KB, 4MB)").Default("10MB").Bytes()
 
 	syslogScan     = cli.Command("syslog", "Scan syslog")
@@ -1127,6 +1128,7 @@ func runSingleScan(ctx context.Context, cmd string, cfg engine.Config) (metrics,
 			ExcludeBuckets: commaSeparatedToSlice(*gcsExcludeBuckets),
 			IncludeObjects: commaSeparatedToSlice(*gcsIncludeObjects),
 			ExcludeObjects: commaSeparatedToSlice(*gcsExcludeObjects),
+			UnitPrefixes:   commaSeparatedToSlice(*gcsUnitPrefixes),
 			Concurrency:    *concurrency,
 			MaxObjectSize:  int64(*gcsMaxObjectSize),
 		}

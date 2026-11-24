@@ -262,6 +262,9 @@ type GCSConfig struct {
 	IncludeObjects,
 	// ExcludeObjects is a list of objects to exclude from the scan.
 	ExcludeObjects []string
+	// UnitPrefixes splits each bucket into one independently scannable unit per
+	// prefix. Empty scans each bucket as a single unit.
+	UnitPrefixes []string
 }
 
 // GitConfig defines the optional configuration for a git source.

@@ -153,6 +153,21 @@ type ChunkError struct {
 	Err  error
 }
 
+// UnitIncompleteError is returned by a source's ChunkUnit when the unit could
+// not be scanned in full: a listed object could not be read, or the listing
+// stopped early. The unit is still reported as stopped, but the manager does
+// not count it as finished, so a resumed run does not skip it.
+type UnitIncompleteError struct{ Err error }
+
+func (e UnitIncompleteError) Error() string { return e.Err.Error() }
+func (e UnitIncompleteError) Unwrap() error { return e.Err }
+
+// IsUnitIncomplete reports whether err marks a unit as not fully scanned.
+func IsUnitIncomplete(err error) bool {
+	_, ok := errors.AsType[UnitIncompleteError](err)
+	return ok
+}
+
 func (f ChunkError) Error() string {
 	unit, kind := "<nil>", SourceUnitKind("unit")
 	if f.Unit != nil {
@@ -319,10 +334,24 @@ func (jp *JobProgress) StartUnitChunking(unit SourceUnit, start time.Time) {
 	jp.executeHooks(func(hook JobProgressHook) { hook.StartUnitChunking(jp.Ref(), unit, start) })
 }
 func (jp *JobProgress) EndUnitChunking(unit SourceUnit, end time.Time) {
+	jp.endUnitChunking(unit, end, true)
+}
+
+// EndUnitChunkingKind ends a unit's chunking and records whether the unit was
+// scanned in full. A unit that was not sets the same timing and hooks as any
+// other, but is not counted as finished, so the job's progress and any resume
+// based on finished units do not skip it.
+func (jp *JobProgress) EndUnitChunkingKind(unit SourceUnit, end time.Time, complete bool) {
+	jp.endUnitChunking(unit, end, complete)
+}
+
+func (jp *JobProgress) endUnitChunking(unit SourceUnit, end time.Time, complete bool) {
 	// TODO: Record time.
-	jp.metricsLock.Lock()
-	jp.metrics.FinishedUnits++
-	jp.metricsLock.Unlock()
+	if complete {
+		jp.metricsLock.Lock()
+		jp.metrics.FinishedUnits++
+		jp.metricsLock.Unlock()
+	}
 	jp.executeHooks(func(hook JobProgressHook) { hook.EndUnitChunking(jp.Ref(), unit, end) })
 }
 func (jp *JobProgress) StartEnumerating(start time.Time) {

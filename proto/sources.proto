@@ -207,6 +207,10 @@ message GCS {
   repeated string include_objects = 8;
   repeated string exclude_objects = 9;
   int64 max_object_size = 10;
+  // unit_prefixes splits each bucket into one source unit per prefix, so units
+  // can be scanned and resumed independently. Prefixes must not overlap. Leave
+  // empty to scan a bucket as a single unit.
+  repeated string unit_prefixes = 13;
 }
 
 message Git {

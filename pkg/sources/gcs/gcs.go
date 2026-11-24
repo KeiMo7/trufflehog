@@ -36,6 +36,7 @@ const (
 // Ensure the Source satisfies the interfaces at compile time.
 var _ sources.Source = (*Source)(nil)
 var _ sources.SourceUnitUnmarshaller = (*Source)(nil)
+var _ sources.SourceUnitEnumChunker = (*Source)(nil)
 
 // Type returns the type of source.
 // It is used for matching source types in configuration and job input.
@@ -70,9 +71,12 @@ type Source struct {
 	stats      *attributes
 	chunksCh   chan *sources.Chunk
 
+	// unitPrefixes splits each bucket into one unit per prefix. It is empty when
+	// the source enumerates a whole bucket as one unit.
+	unitPrefixes []string
+
 	mu               sync.Mutex
 	sources.Progress // progress is not thread safe
-	sources.CommonSourceUnitUnmarshaller
 }
 
 // persistableCache is a wrapper around cache.Cache that allows
@@ -128,6 +132,11 @@ func (s *Source) Init(aCtx context.Context, name string, id sources.JobID, sourc
 	}
 	s.gcsManager = gcsManager
 
+	s.unitPrefixes = unitPrefixesFromConn(&conn)
+	if err := validateUnitPrefixes(conn.GetUnitPrefixes()); err != nil {
+		return err
+	}
+
 	aCtx.Logger().V(1).Info("GCS source initialized",
 		"auth_method", authMethod(&conn),
 		"project_id", conn.ProjectId,
@@ -135,14 +144,14 @@ func (s *Source) Init(aCtx context.Context, name string, id sources.JobID, sourc
 		"exclude_buckets", len(conn.GetExcludeBuckets()),
 		"include_objects", len(conn.GetIncludeObjects()),
 		"exclude_objects", len(conn.GetExcludeObjects()),
+		"unit_prefixes", len(s.unitPrefixes),
 		"max_object_size", gcsManager.maxObjectSize,
 		"concurrency", gcsManager.concurrency,
 	)
 
-	if err := s.enumerate(aCtx); err != nil {
-		return fmt.Errorf("error enumerating buckets and objects: %w", err)
-	}
-
+	// The object enumeration the legacy progress needs runs lazily in Chunks,
+	// not here, so initializing a source for a unit scan costs no listing. A
+	// source that is only ever enumerated therefore never lists objects.
 	return nil
 }
 
@@ -267,7 +276,9 @@ func setGCSManagerOptions(include, exclude []string, includeFn, excludeFn func([
 }
 
 // enumerate all the objects and buckets in the source.
-// This will be used to calculate progress.
+// This will be used to calculate progress. It streams the listing and keeps only
+// per-bucket counts, never the object names, so a large bucket does not grow
+// memory. The unit path computes its own progress and never calls it.
 func (s *Source) enumerate(ctx context.Context) error {
 	stats, err := s.gcsManager.Attributes(ctx)
 	if err != nil {
@@ -280,6 +291,15 @@ func (s *Source) enumerate(ctx context.Context) error {
 
 // Chunks emits chunks of bytes over a channel.
 func (s *Source) Chunks(ctx context.Context, chunksChan chan *sources.Chunk, _ ...sources.ChunkingTarget) error {
+	// The legacy path reports progress as a share of the source's object count,
+	// so it needs the enumeration. The unit path does not, and deferring it keeps
+	// a unit scan from paying for a full listing up front.
+	if s.stats == nil {
+		if err := s.enumerate(ctx); err != nil {
+			return err
+		}
+	}
+
 	persistableCache := s.setupCache(ctx)
 
 	objectCh, err := s.gcsManager.ListObjects(ctx)

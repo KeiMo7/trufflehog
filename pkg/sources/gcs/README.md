@@ -205,15 +205,32 @@ There is no GCS specific flag for this. Use TruffleHog's global `--concurrency` 
 trufflehog gcs --project-id my-gcp-project --cloud-environment --concurrency 10
 ```
 
+### Work Units
+
+By default each bucket is one work unit. `--unit-prefix` splits every bucket into one unit per key prefix, so each prefix can be scanned, retried and resumed on its own. A unit's scope is the bucket plus the prefix, so a unit ID is stable for the same configuration and is the same whether the scan authenticated or not.
+
+```bash
+trufflehog gcs --project-id my-gcp-project --cloud-environment \
+  --unit-prefix 'logs/' --unit-prefix 'secrets/'
+```
+
+- Prefixes are matched literally against the key. An object belongs to at most one unit: a prefix nested under another configured prefix is dropped, since the shorter one already covers it.
+- An object removed by an exclude rule is in no unit and is left out of the unit's stats.
+- Enumeration reports one unit per bucket (or per prefix) without listing objects, so a bucket whose objects cannot be listed is still a unit and its failure shows up against it rather than failing the whole scan.
+- A unit that cannot cover its scope, because listing was refused or an object could not be read, is reported against that unit and is not counted as finished. The other units still run.
+- The object list is streamed, never held whole in memory, so a bucket with a hundred thousand objects is split without reading all of its names first.
+
+The unit progress and resume encoding are the same mechanism the other sources use: progress is counted by finished units, and a unit's own resume entry is a comma-separated list of the content it already scanned.
+
 ## How Scanning Works
 
 ### Scanning Process
 
-1. **Enumeration**: Lists every bucket in the project (or uses the buckets given with `include_buckets` when unauthenticated), then counts the objects in each one. This count is used to show scan progress.
+1. **Enumeration**: Reports one unit per bucket, or one unit per configured `--unit-prefix`. Buckets come from the include list when one is set and otherwise from the project; an object is never listed at this stage.
 2. **Bucket Listing**: Lists the buckets again to start the actual scan, applying the include and exclude filters.
-3. **Object Listing**: For each bucket, lists its objects in parallel, applying the include and exclude filters and skipping objects over the size limit.
+3. **Object Listing**: For each unit, streams its objects, applying the include and exclude filters and skipping objects over the size limit.
 4. **Object Scanning**: Downloads each object and sends its contents to the detection engine as a chunk, tagged with the bucket name, object name, and other metadata.
-5. **Progress Tracking**: Keeps a cache of the MD5 hash of every object already scanned, so if the same scan is resumed later, already scanned objects are skipped.
+5. **Progress Tracking**: Counts finished units for job progress, and keeps the MD5 hash of every object a unit already scanned so rescanning that unit skips it.
 
 ### What Gets Scanned
 

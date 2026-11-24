@@ -578,6 +578,12 @@ func (s *SourceManager) runWithUnits(ctx context.Context, source SourceUnitEnumC
 			chunkCh: make(chan *Chunk, defaultChannelSize),
 			report:  report,
 		}
+		// complete is true only when the unit was scanned in full. A unit that
+		// failed, or that reported it was incomplete, is timed but not counted
+		// as finished, so progress and a resume do not skip it. The producer
+		// sets it and the consumer reads it after the chunk channel closes,
+		// which orders the two.
+		var complete atomic.Bool
 		// Consume units and produce chunks.
 		unitPool.Go(func() error {
 			report.StartUnitChunking(unit, time.Now())
@@ -590,16 +596,26 @@ func (s *SourceManager) runWithUnits(ctx context.Context, source SourceUnitEnumC
 				catchFirstError(Fatal{err})
 			})
 			if err := source.ChunkUnit(ctx, unit, chunkReporter); err != nil {
+				if IsUnitIncomplete(err) {
+					// The unit stopped short of its scope. Record it against the
+					// unit without failing the job, keep the rest of the scan
+					// running, and leave it out of the finished count.
+					report.ReportError(ChunkError{Unit: unit, Err: err})
+					return nil
+				}
 				report.ReportError(jobErr(ctx, ChunkError{Unit: unit, Err: err}))
 				catchFirstError(jobErr(ctx, err))
+				return nil
 			}
+			complete.Store(true)
 			return nil
 		})
-		// Consume chunks and export chunks.
+		// Consume chunks and export chunks. EndUnitChunkingKind runs here, after
+		// every chunk has been reported, so a unit's chunk metrics are complete.
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			defer func() { report.EndUnitChunking(unit, time.Now()) }()
+			defer func() { report.EndUnitChunkingKind(unit, time.Now(), complete.Load()) }()
 			for chunk := range chunkReporter.chunkCh {
 				if src, ok := source.(Source); ok {
 					chunk.JobID = src.JobID()
@@ -628,6 +644,7 @@ func (s *SourceManager) scanWithUnit(ctx context.Context, source SourceUnitChunk
 	}
 	// Produce chunks from the given unit.
 	var chunkErr error
+	var complete atomic.Bool
 	go func() {
 		report.StartUnitChunking(unit, time.Now())
 		defer close(chunkReporter.chunkCh)
@@ -640,14 +657,21 @@ func (s *SourceManager) scanWithUnit(ctx context.Context, source SourceUnitChunk
 		})
 		if err := source.ChunkUnit(ctx, unit, chunkReporter); err != nil {
 			report.ReportError(jobErr(ctx, ChunkError{Unit: unit, Err: err}))
+			if IsUnitIncomplete(err) {
+				// The single unit stopped short of its scope; report it but do
+				// not fail the job or count it finished.
+				return
+			}
 			chunkErr = jobErr(ctx, err)
+			return
 		}
+		complete.Store(true)
 	}()
 	// Consume chunks and export chunks.
 	// This anonymous function blocks until the chunkReporter.chunkCh is
 	// closed in the above goroutine.
 	func() {
-		defer func() { report.EndUnitChunking(unit, time.Now()) }()
+		defer func() { report.EndUnitChunkingKind(unit, time.Now(), complete.Load()) }()
 		for chunk := range chunkReporter.chunkCh {
 			if src, ok := source.(Source); ok {
 				chunk.JobID = src.JobID()

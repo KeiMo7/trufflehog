@@ -31,6 +31,7 @@ func (e *Engine) ScanGCS(ctx context.Context, c sources.GCSConfig) (sources.JobP
 		ExcludeBuckets: c.ExcludeBuckets,
 		IncludeObjects: c.IncludeObjects,
 		ExcludeObjects: c.ExcludeObjects,
+		UnitPrefixes:   c.UnitPrefixes,
 	}
 
 	// Make sure only one auth method is selected.
